@@ -87,7 +87,7 @@
                 <!-- Dynamische Link-Felder werden hier von JavaScript eingefügt -->
                 <div id="admin-links-fields" class="space-y-4"></div>
 
-                <button type="submit" class="w-full bg-yellow-600 hover:bg-yellow-700 text-gray-900 font-bold py-3 rounded-lg shadow-md transition duration-150">
+                <button type="submit" id="save-button" class="w-full bg-yellow-600 hover:bg-yellow-700 text-gray-900 font-bold py-3 rounded-lg shadow-md transition duration-150">
                     <i class="fas fa-save mr-2"></i> Links speichern
                 </button>
             </form>
@@ -108,14 +108,12 @@
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // Verpacke die gesamte Logik in eine asynchrone Funktion, um 'return' für die Fehlerbehandlung
-        // im Top-Level-Scope des Moduls zu ermöglichen und den Syntaxfehler zu beheben.
         async function initApp() {
 
             if (!firebaseConfig) {
                 console.error("Firebase Konfiguration nicht gefunden.");
                 document.getElementById('loading').innerHTML = '<p class="text-red-500">Fehler: Firebase-Konfiguration fehlt.</p>';
-                return; // Jetzt legal, da innerhalb einer Funktion
+                return;
             }
 
             // --- FIREBASE INITIALISIERUNG ---
@@ -126,15 +124,12 @@
             // Debug-Logging für Firestore (optional, kann entfernt werden)
             setLogLevel('Debug'); 
 
-            let userId = null;
             let authReady = false;
 
             // --- HILFSFUNKTIONEN ---
 
             /**
-             * Konfiguriert den Pfad zur Datenbank. 
-             * FÜR ÖFFENTLICHES LESEN: Wir verwenden den öffentlichen Pfad, der von den Canvas Security Rules
-             * für Lesezugriff durch jeden Benutzer (auch anonym) freigegeben ist.
+             * Konfiguriert den öffentlichen Pfad zur Datenbank. 
              * Path: /artifacts/{appId}/public/data/business_links/{appId}-config
              */
             function getDocRef() {
@@ -147,7 +142,7 @@
              * Das Standard-Datenmodell für neue Geschäfte.
              */
             const DEFAULT_LINKS = {
-                // HINWEIS: Wir speichern die ID des Erstellers, um später nur diesem Schreibzugriff zu gewähren (Admin).
+                // HINWEIS: ownerId wird beim ersten Speichern gesetzt
                 ownerId: '', 
                 businessName: "Mein cooles Geschäft",
                 links: [
@@ -185,28 +180,37 @@
             // --- AUTHENTIFIZIERUNG UND INITIALISIERUNG ---
 
             onAuthStateChanged(auth, async (user) => {
-                if (user) {
-                    userId = user.uid;
-                    authReady = true;
-                    console.log("Benutzer authentifiziert mit ID:", userId);
-                } else {
-                    // Anonymer Benutzer, wird für das Lesen der öffentlichen Daten benötigt
-                    userId = null; 
-                    authReady = true;
-                    console.log("Benutzer ist anonym.");
-                }
+                // Wichtig: onAuthStateChanged wird immer als Erstes ausgelöst,
+                // auch wenn der Benutzer anonym ist.
+                authReady = true;
+                const params = new URLSearchParams(window.location.search);
+                const isAdmin = params.get('admin') === 'true';
+                
+                // Verstecke Ladeanzeige
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('content').classList.remove('hidden'); 
+                
                 // Starte die App-Ansicht erst, nachdem die Auth-Prüfung abgeschlossen ist
-                await initializeAppView(); 
+                if (isAdmin) {
+                    document.getElementById('admin-panel').classList.remove('hidden');
+                    document.getElementById('admin-form').addEventListener('submit', handleSaveLinks);
+                    document.getElementById('generate-copy-btn').addEventListener('click', generateMarketingCopy);
+                    await loadLinksForAdmin();
+                } else {
+                    setupRealtimeListener();
+                }
             });
 
             async function authenticate() {
                 try {
-                    // Verwende den initialAuthToken, falls vorhanden
+                    // Melde dich mit dem CustomToken an, falls vorhanden (für den Ersteller)
                     if (initialAuthToken) {
                         await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("Angemeldet als Erst-Ersteller.");
                     } else {
                         // Andernfalls melde dich anonym an (für Lesezugriff)
                         await signInAnonymously(auth);
+                        console.log("Angemeldet als anonymer Benutzer.");
                     }
                 } catch (error) {
                     console.error("Fehler bei der Anmeldung:", error);
@@ -215,49 +219,18 @@
             }
             
             /**
-             * Hauptfunktion zur Initialisierung der Ansicht (Admin oder Normal).
-             */
-            async function initializeAppView() {
-                const params = new URLSearchParams(window.location.search);
-                const isAdmin = params.get('admin') === 'true';
-
-                // Verstecke Ladeanzeige
-                document.getElementById('loading').classList.add('hidden');
-                
-                // Wir verwenden die ID des angemeldeten Benutzers (auth.currentUser.uid) nur für den Schreibzugriff
-                // und die initiale Erstellung.
-                const currentUserId = auth.currentUser?.uid;
-
-                // Wenn der Admin-Modus aktiviert ist, zeige das Admin-Panel.
-                if (isAdmin) {
-                    document.getElementById('admin-panel').classList.remove('hidden');
-                    document.getElementById('content').classList.remove('hidden'); // Zeige Haupt-UI auch im Admin-Modus
-                    document.getElementById('admin-form').addEventListener('submit', handleSaveLinks);
-                    // NEU: AI Button Listener
-                    document.getElementById('generate-copy-btn').addEventListener('click', generateMarketingCopy);
-                    await loadLinksForAdmin(currentUserId);
-                } else {
-                    // Normaler Modus: Zeige den Inhalt und richte den Echtzeit-Listener ein.
-                    document.getElementById('content').classList.remove('hidden');
-                    setupRealtimeListener();
-                }
-            }
-
-            /**
              * Richte einen Echtzeit-Listener für den normalen Modus ein (Link-Anzeige).
              */
             function setupRealtimeListener() {
-                // Keine user-ID-Prüfung notwendig, da wir den öffentlichen Pfad verwenden
-                
                 const docRef = getDocRef();
 
-                onSnapshot(docRef, async (docSnap) => {
+                onSnapshot(docRef, (docSnap) => {
                     if (docSnap.exists()) {
                         const data = docSnap.data();
                         renderLinks(data);
                     } else {
-                        console.log("Keine Konfigurationsdaten gefunden. Initialisiere Standardwerte nur, wenn der Benutzer authentifiziert ist (was im Admin-Modus passiert).");
-                        renderLinks({ businessName: "Links", links: [] }); // Zeige leere Links im Normalmodus
+                        // Zeige Standardtexte, wenn das Dokument noch nicht existiert.
+                        renderLinks({ businessName: DEFAULT_LINKS.businessName, links: [] }); 
                     }
                 }, (error) => {
                     console.error("Firestore-Listener-Fehler:", error);
@@ -265,22 +238,6 @@
                 });
             }
             
-            /**
-             * Initialisiert die Standarddaten, falls noch keine existieren.
-             * Dies wird nur im Admin-Modus beim ersten Laden aufgerufen.
-             */
-            async function initializeDefaultData(currentUserId) {
-                const docRef = getDocRef();
-                const docSnap = await getDoc(docRef);
-                if (!docSnap.exists() && currentUserId) {
-                    const initialData = { ...DEFAULT_LINKS, ownerId: currentUserId };
-                    await setDoc(docRef, initialData);
-                    console.log("Standardkonfiguration erstellt.");
-                    return initialData;
-                }
-                return docSnap.exists() ? docSnap.data() : DEFAULT_LINKS;
-            }
-
             /**
              * Rendert die Links in die Hauptansicht.
              */
@@ -290,65 +247,72 @@
                 container.innerHTML = ''; // Lösche alte Buttons
 
                 if (data.links && Array.isArray(data.links)) {
-                    data.links.forEach(link => {
-                        // Überspringe leere URLs, falls sie gespeichert wurden
-                        if (!link.url || link.url.trim() === '') return; 
-                        
-                        // Erstellen des Buttons
+                    const activeLinks = data.links.filter(link => link.url && link.url.trim() !== '');
+                    
+                    if (activeLinks.length === 0) {
+                         container.innerHTML = '<p class="text-gray-400 text-center">Keine Links konfiguriert.</p>';
+                         return;
+                    }
+
+                    activeLinks.forEach(link => {
                         const button = document.createElement('a');
-                        button.href = link.url || '#';
+                        button.href = link.url;
                         button.target = "_blank"; // In neuem Tab öffnen
                         button.className = `link-button w-full flex items-center justify-center ${link.color || 'bg-gray-700'} text-white font-semibold py-4 rounded-lg shadow-lg uppercase tracking-wider`;
                         
-                        // Button-Inhalt (Icon + Text)
                         button.innerHTML = `
                             <i class="fab ${link.icon || 'fa-link'} text-xl mr-3"></i>
                             <span>${link.platform}</span>
                         `;
                         container.appendChild(button);
                     });
-                    
-                    if (container.children.length === 0) {
-                        container.innerHTML = '<p class="text-gray-400 text-center">Keine Links konfiguriert. Bitte im Admin-Modus hinzufügen.</p>';
-                    }
-
                 } else {
-                    container.innerHTML = '<p class="text-gray-400 text-center">Keine Links konfiguriert. Bitte im Admin-Modus hinzufügen.</p>';
+                    container.innerHTML = '<p class="text-gray-400 text-center">Keine Links konfiguriert.</p>';
                 }
             }
 
             /**
              * Lädt die Links für die Admin-Ansicht (Formular).
              */
-            async function loadLinksForAdmin(currentUserId) {
-                if (!authReady) return; // Warten, bis Auth-Status bekannt ist
+            async function loadLinksForAdmin() {
+                if (!authReady) return;
 
-                // Beim ersten Laden initialisieren wir die Daten, falls sie nicht existieren
-                let data = await initializeDefaultData(currentUserId);
-                
-                // Prüfen, ob der aktuelle Benutzer der "ownerId" entspricht (Schreibberechtigung)
-                const isOwner = currentUserId && data.ownerId === currentUserId;
-                const adminForm = document.getElementById('admin-form');
+                const currentUserId = auth.currentUser?.uid;
+                const docRef = getDocRef();
+                const docSnap = await getDoc(docRef);
                 const fieldsContainer = document.getElementById('admin-links-fields');
+                const adminForm = document.getElementById('admin-form');
                 const messageEl = document.getElementById('admin-message');
-
-                if (!data.ownerId && currentUserId) {
-                    // Wenn OwnerId fehlt, aber ein Benutzer angemeldet ist, setze ihn als Owner
-                    data.ownerId = currentUserId; 
-                    await setDoc(getDocRef(), data); // Speichere die OwnerId
+                const saveButton = document.getElementById('save-button');
+                
+                let data;
+                let isOwner = false;
+                
+                if (docSnap.exists()) {
+                    data = docSnap.data();
+                    // Prüfen, ob der Benutzer der Owner ist
+                    isOwner = currentUserId && data.ownerId === currentUserId;
+                } else {
+                    // Dokument existiert nicht: Jede angemeldete Person kann es erstellen
+                    data = { ...DEFAULT_LINKS, ownerId: currentUserId || '' };
+                    isOwner = currentUserId !== null; // Nur angemeldete Benutzer dürfen erstellen
                 }
-
-                if (!isOwner && data.ownerId && currentUserId) {
-                    // Benutzer ist angemeldet, aber nicht der ursprüngliche Ersteller
-                    messageEl.textContent = 'Sie sind nicht der Ersteller dieser Links und können sie daher nicht bearbeiten.';
-                    messageEl.className = 'mt-4 text-center text-sm text-red-500 font-bold';
-                    adminForm.querySelector('button[type="submit"]').disabled = true;
-                } else if (!currentUserId) {
-                    // Benutzer ist anonym, kann nicht speichern
+                
+                // Formularzustand basierend auf Besitz
+                if (!currentUserId) {
                     messageEl.textContent = 'Zur Bearbeitung müssen Sie angemeldet sein.';
                     messageEl.className = 'mt-4 text-center text-sm text-red-500 font-bold';
-                    adminForm.querySelector('button[type="submit"]').disabled = true;
+                    saveButton.disabled = true;
+                } else if (!isOwner && data.ownerId) {
+                    messageEl.textContent = `Sie sind nicht der Ersteller dieses Links (${data.ownerId}). Die Bearbeitung ist gesperrt.`;
+                    messageEl.className = 'mt-4 text-center text-sm text-red-500 font-bold';
+                    saveButton.disabled = true;
+                } else if (isOwner) {
+                     messageEl.textContent = `Admin-Modus. Sie sind der Ersteller (${currentUserId}).`;
+                     messageEl.className = 'mt-4 text-center text-sm text-green-500 font-bold';
+                     saveButton.disabled = false;
                 }
+
 
                 document.getElementById('admin-business-name').value = data.businessName || '';
                 fieldsContainer.innerHTML = '';
@@ -378,6 +342,11 @@
                 
                 // Zeige die Live-Vorschau mit den Admin-Daten
                 renderLinks(data); 
+                
+                // Richte den Echtzeit-Listener ein, falls das Dokument existiert, um Änderungen von anderen Instanzen zu sehen
+                if (docSnap.exists()) {
+                     setupRealtimeListener();
+                }
             }
 
             /**
@@ -387,17 +356,20 @@
                 event.preventDefault();
                 
                 const messageEl = document.getElementById('admin-message');
-                messageEl.textContent = 'Speichere...';
-                messageEl.className = 'mt-4 text-center text-sm text-yellow-500';
-                
                 const currentUserId = auth.currentUser?.uid;
+                
                 if (!currentUserId) {
                      messageEl.textContent = 'Fehler: Sie müssen angemeldet sein, um zu speichern.';
                      messageEl.className = 'mt-4 text-center text-sm text-red-500';
                      return;
                 }
 
+                // Prüfen der Schreibberechtigung (wird durch Firestore Rules und UI-Sperre abgedeckt)
+                // Die Owner-Prüfung erfolgt implizit beim `setDoc`
 
+                messageEl.textContent = 'Speichere...';
+                messageEl.className = 'mt-4 text-center text-sm text-yellow-500';
+                
                 try {
                     const businessName = document.getElementById('admin-business-name').value.trim();
                     const inputs = document.querySelectorAll('.link-input');
@@ -407,11 +379,11 @@
                         url: input.value.trim(),
                         icon: input.getAttribute('data-icon'),
                         color: input.getAttribute('data-color'),
-                        placeholder: input.placeholder // Behalte Placeholder für zukünftige Edits bei
+                        placeholder: input.placeholder 
                     }));
 
                     const newData = {
-                        // Feste OwnerId für Schreibberechtigungsprüfung
+                        // WICHTIG: Setze die OwnerId fest auf den aktuellen Benutzer für die Security Rules
                         ownerId: currentUserId, 
                         businessName: businessName,
                         links: updatedLinks
@@ -428,8 +400,8 @@
 
                 } catch (error) {
                     console.error("Fehler beim Speichern der Links:", error);
-                    // Firestore Security Rule Fehler werden hier abgefangen.
-                    messageEl.textContent = `Fehler beim Speichern. Prüfen Sie, ob Sie die Berechtigung zum Speichern haben: ${error.message}`;
+                    // Die Fehlermeldung wird nun spezifischer ausgegeben
+                    messageEl.textContent = `Fehler beim Speichern: ${error.message}. Sie haben möglicherweise keine Schreibberechtigung.`;
                     messageEl.className = 'mt-4 text-center text-sm text-red-500';
                 }
             }
