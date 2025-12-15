@@ -132,18 +132,23 @@
             // --- HILFSFUNKTIONEN ---
 
             /**
-             * Konfiguriert den Pfad zur Datenbank.
-             * Wir verwenden einen privaten Pfad mit der __app_id als Unterscheidung für jedes Geschäft.
+             * Konfiguriert den Pfad zur Datenbank. 
+             * FÜR ÖFFENTLICHES LESEN: Wir verwenden den öffentlichen Pfad, der von den Canvas Security Rules
+             * für Lesezugriff durch jeden Benutzer (auch anonym) freigegeben ist.
+             * Path: /artifacts/{appId}/public/data/business_links/{appId}-config
              */
-            function getDocRef(uid) {
-                // Path: /artifacts/{appId}/users/{userId}/business_links/links_config
-                return doc(db, 'artifacts', appId, 'users', uid, 'business_links', 'links_config');
+            function getDocRef() {
+                // Wir verwenden die appId als eindeutigen Dokumentnamen, da alle Benutzer (anonym/angemeldet)
+                // dieselben Links für diese spezifische App-Instanz sehen sollen.
+                return doc(db, 'artifacts', appId, 'public', 'data', 'business_links', `${appId}-config`);
             }
 
             /**
              * Das Standard-Datenmodell für neue Geschäfte.
              */
             const DEFAULT_LINKS = {
+                // HINWEIS: Wir speichern die ID des Erstellers, um später nur diesem Schreibzugriff zu gewähren (Admin).
+                ownerId: '', 
                 businessName: "Mein cooles Geschäft",
                 links: [
                     { platform: "Website", url: "https://mein-geschaeft.de", icon: "fa-globe", color: "bg-blue-600", placeholder: "https://Ihre-Website.de" },
@@ -184,23 +189,28 @@
                     userId = user.uid;
                     authReady = true;
                     console.log("Benutzer authentifiziert mit ID:", userId);
-                    await initializeAppView();
                 } else {
-                    // Dies sollte nur passieren, wenn die anfängliche Anmeldung fehlschlägt.
-                    console.error("Fehler bei der Authentifizierung.");
-                    document.getElementById('loading').innerHTML = '<p class="text-red-500">Fehler bei der Anmeldung.</p>';
+                    // Anonymer Benutzer, wird für das Lesen der öffentlichen Daten benötigt
+                    userId = null; 
+                    authReady = true;
+                    console.log("Benutzer ist anonym.");
                 }
+                // Starte die App-Ansicht erst, nachdem die Auth-Prüfung abgeschlossen ist
+                await initializeAppView(); 
             });
 
             async function authenticate() {
                 try {
+                    // Verwende den initialAuthToken, falls vorhanden
                     if (initialAuthToken) {
                         await signInWithCustomToken(auth, initialAuthToken);
                     } else {
+                        // Andernfalls melde dich anonym an (für Lesezugriff)
                         await signInAnonymously(auth);
                     }
                 } catch (error) {
                     console.error("Fehler bei der Anmeldung:", error);
+                    document.getElementById('loading').innerHTML = '<p class="text-red-500">Fehler bei der Anmeldung. Bitte versuchen Sie es später erneut.</p>';
                 }
             }
             
@@ -214,14 +224,18 @@
                 // Verstecke Ladeanzeige
                 document.getElementById('loading').classList.add('hidden');
                 
-                // Wenn der Admin-Modus aktiviert ist, zeige das Admin-Panel und lade die Daten nur einmal (getDoc).
+                // Wir verwenden die ID des angemeldeten Benutzers (auth.currentUser.uid) nur für den Schreibzugriff
+                // und die initiale Erstellung.
+                const currentUserId = auth.currentUser?.uid;
+
+                // Wenn der Admin-Modus aktiviert ist, zeige das Admin-Panel.
                 if (isAdmin) {
                     document.getElementById('admin-panel').classList.remove('hidden');
                     document.getElementById('content').classList.remove('hidden'); // Zeige Haupt-UI auch im Admin-Modus
                     document.getElementById('admin-form').addEventListener('submit', handleSaveLinks);
                     // NEU: AI Button Listener
                     document.getElementById('generate-copy-btn').addEventListener('click', generateMarketingCopy);
-                    await loadLinksForAdmin();
+                    await loadLinksForAdmin(currentUserId);
                 } else {
                     // Normaler Modus: Zeige den Inhalt und richte den Echtzeit-Listener ein.
                     document.getElementById('content').classList.remove('hidden');
@@ -233,35 +247,38 @@
              * Richte einen Echtzeit-Listener für den normalen Modus ein (Link-Anzeige).
              */
             function setupRealtimeListener() {
-                if (!authReady || !userId) return;
+                // Keine user-ID-Prüfung notwendig, da wir den öffentlichen Pfad verwenden
                 
-                const docRef = getDocRef(userId);
+                const docRef = getDocRef();
 
                 onSnapshot(docRef, async (docSnap) => {
                     if (docSnap.exists()) {
                         const data = docSnap.data();
                         renderLinks(data);
                     } else {
-                        console.log("Keine Konfigurationsdaten gefunden. Initialisiere Standardwerte.");
-                        // Versuche, die Standardwerte zu laden oder zu erstellen
-                        await initializeDefaultData(); 
+                        console.log("Keine Konfigurationsdaten gefunden. Initialisiere Standardwerte nur, wenn der Benutzer authentifiziert ist (was im Admin-Modus passiert).");
+                        renderLinks({ businessName: "Links", links: [] }); // Zeige leere Links im Normalmodus
                     }
                 }, (error) => {
                     console.error("Firestore-Listener-Fehler:", error);
+                    document.getElementById('links-container').innerHTML = '<p class="text-red-400 text-center">Fehler beim Laden der Links. Die Anwendung ist möglicherweise noch nicht konfiguriert oder die Netzwerkverbindung ist gestört.</p>';
                 });
             }
             
             /**
              * Initialisiert die Standarddaten, falls noch keine existieren.
+             * Dies wird nur im Admin-Modus beim ersten Laden aufgerufen.
              */
-            async function initializeDefaultData() {
-                const docRef = getDocRef(userId);
+            async function initializeDefaultData(currentUserId) {
+                const docRef = getDocRef();
                 const docSnap = await getDoc(docRef);
-                if (!docSnap.exists()) {
-                    await setDoc(docRef, DEFAULT_LINKS);
+                if (!docSnap.exists() && currentUserId) {
+                    const initialData = { ...DEFAULT_LINKS, ownerId: currentUserId };
+                    await setDoc(docRef, initialData);
                     console.log("Standardkonfiguration erstellt.");
-                    renderLinks(DEFAULT_LINKS);
+                    return initialData;
                 }
+                return docSnap.exists() ? docSnap.data() : DEFAULT_LINKS;
             }
 
             /**
@@ -274,6 +291,9 @@
 
                 if (data.links && Array.isArray(data.links)) {
                     data.links.forEach(link => {
+                        // Überspringe leere URLs, falls sie gespeichert wurden
+                        if (!link.url || link.url.trim() === '') return; 
+                        
                         // Erstellen des Buttons
                         const button = document.createElement('a');
                         button.href = link.url || '#';
@@ -287,6 +307,11 @@
                         `;
                         container.appendChild(button);
                     });
+                    
+                    if (container.children.length === 0) {
+                        container.innerHTML = '<p class="text-gray-400 text-center">Keine Links konfiguriert. Bitte im Admin-Modus hinzufügen.</p>';
+                    }
+
                 } else {
                     container.innerHTML = '<p class="text-gray-400 text-center">Keine Links konfiguriert. Bitte im Admin-Modus hinzufügen.</p>';
                 }
@@ -295,23 +320,47 @@
             /**
              * Lädt die Links für die Admin-Ansicht (Formular).
              */
-            async function loadLinksForAdmin() {
-                if (!authReady || !userId) return;
+            async function loadLinksForAdmin(currentUserId) {
+                if (!authReady) return; // Warten, bis Auth-Status bekannt ist
 
-                const docRef = getDocRef(userId);
-                const docSnap = await getDoc(docRef);
-                let data = docSnap.exists() ? docSnap.data() : DEFAULT_LINKS;
+                // Beim ersten Laden initialisieren wir die Daten, falls sie nicht existieren
+                let data = await initializeDefaultData(currentUserId);
+                
+                // Prüfen, ob der aktuelle Benutzer der "ownerId" entspricht (Schreibberechtigung)
+                const isOwner = currentUserId && data.ownerId === currentUserId;
+                const adminForm = document.getElementById('admin-form');
+                const fieldsContainer = document.getElementById('admin-links-fields');
+                const messageEl = document.getElementById('admin-message');
+
+                if (!data.ownerId && currentUserId) {
+                    // Wenn OwnerId fehlt, aber ein Benutzer angemeldet ist, setze ihn als Owner
+                    data.ownerId = currentUserId; 
+                    await setDoc(getDocRef(), data); // Speichere die OwnerId
+                }
+
+                if (!isOwner && data.ownerId && currentUserId) {
+                    // Benutzer ist angemeldet, aber nicht der ursprüngliche Ersteller
+                    messageEl.textContent = 'Sie sind nicht der Ersteller dieser Links und können sie daher nicht bearbeiten.';
+                    messageEl.className = 'mt-4 text-center text-sm text-red-500 font-bold';
+                    adminForm.querySelector('button[type="submit"]').disabled = true;
+                } else if (!currentUserId) {
+                    // Benutzer ist anonym, kann nicht speichern
+                    messageEl.textContent = 'Zur Bearbeitung müssen Sie angemeldet sein.';
+                    messageEl.className = 'mt-4 text-center text-sm text-red-500 font-bold';
+                    adminForm.querySelector('button[type="submit"]').disabled = true;
+                }
 
                 document.getElementById('admin-business-name').value = data.businessName || '';
-                const fieldsContainer = document.getElementById('admin-links-fields');
                 fieldsContainer.innerHTML = '';
 
-                // Stelle sicher, dass das Admin-Formular die korrekten Standardwerte/Strukturen verwendet
                 const linksToEdit = data.links || DEFAULT_LINKS.links;
 
                 linksToEdit.forEach((link, index) => {
                     const linkDiv = document.createElement('div');
                     linkDiv.className = 'p-3 bg-gray-700 rounded-lg';
+                    // Deaktivieren der Felder, wenn der Benutzer nicht der Owner ist
+                    const disabledAttr = isOwner ? '' : 'disabled'; 
+
                     linkDiv.innerHTML = `
                         <h4 class="font-medium mb-2">${link.platform} Link:</h4>
                         <input type="url" 
@@ -320,7 +369,9 @@
                             data-color="${link.color}"
                             value="${link.url || ''}"
                             placeholder="${link.placeholder || 'https://link-hier-einfügen.de'}"
-                            class="link-input w-full p-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:ring-yellow-500 focus:border-yellow-500" required>
+                            class="link-input w-full p-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:ring-yellow-500 focus:border-yellow-500" 
+                            required 
+                            ${disabledAttr}>
                     `;
                     fieldsContainer.appendChild(linkDiv);
                 });
@@ -338,6 +389,14 @@
                 const messageEl = document.getElementById('admin-message');
                 messageEl.textContent = 'Speichere...';
                 messageEl.className = 'mt-4 text-center text-sm text-yellow-500';
+                
+                const currentUserId = auth.currentUser?.uid;
+                if (!currentUserId) {
+                     messageEl.textContent = 'Fehler: Sie müssen angemeldet sein, um zu speichern.';
+                     messageEl.className = 'mt-4 text-center text-sm text-red-500';
+                     return;
+                }
+
 
                 try {
                     const businessName = document.getElementById('admin-business-name').value.trim();
@@ -352,11 +411,13 @@
                     }));
 
                     const newData = {
+                        // Feste OwnerId für Schreibberechtigungsprüfung
+                        ownerId: currentUserId, 
                         businessName: businessName,
                         links: updatedLinks
                     };
 
-                    const docRef = getDocRef(userId);
+                    const docRef = getDocRef(); // Öffentlicher Pfad
                     await setDoc(docRef, newData);
 
                     messageEl.textContent = 'Links erfolgreich gespeichert!';
@@ -367,7 +428,8 @@
 
                 } catch (error) {
                     console.error("Fehler beim Speichern der Links:", error);
-                    messageEl.textContent = `Fehler beim Speichern: ${error.message}`;
+                    // Firestore Security Rule Fehler werden hier abgefangen.
+                    messageEl.textContent = `Fehler beim Speichern. Prüfen Sie, ob Sie die Berechtigung zum Speichern haben: ${error.message}`;
                     messageEl.className = 'mt-4 text-center text-sm text-red-500';
                 }
             }
