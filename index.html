@@ -95,21 +95,6 @@
                 <span class="text-xs bg-gray-700 px-2 py-1 rounded text-gray-400">Owner Mode</span>
             </div>
 
-             <!-- AI Generator -->
-             <div class="mb-6 p-4 bg-gray-700/50 rounded-xl border border-indigo-500/30">
-                <h3 class="text-sm font-semibold mb-3 text-indigo-300 flex items-center">
-                    <i class="fas fa-magic mr-2"></i> KI Text-Generator
-                </h3>
-                <div class="space-y-3">
-                    <input type="text" id="ai-platform-goal" placeholder="Thema (z.B. Sommerangebot)" class="w-full p-2 bg-gray-800 border border-gray-600 rounded text-sm text-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none">
-                    <button id="generate-copy-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 rounded text-sm transition-colors">
-                        Text generieren
-                    </button>
-                    <textarea id="ai-generated-text" rows="3" class="hidden w-full p-2 bg-gray-900 rounded text-xs text-gray-300 mt-2" readonly></textarea>
-                </div>
-                <p id="ai-status-message" class="mt-2 text-center text-xs text-gray-400"></p>
-            </div>
-
             <form id="admin-form" class="space-y-4">
                 <div>
                     <label class="text-xs text-gray-400 uppercase font-bold tracking-wider">Geschäftsname</label>
@@ -331,62 +316,22 @@
                         btn.innerHTML = "Speichern & Veröffentlichen";
                     }
                 };
-
-                // AI Handler Setup
-                setupAI(document.getElementById('admin-business-name'));
             }
 
-            function setupAI(nameInput) {
-                const btn = document.getElementById('generate-copy-btn');
-                btn.onclick = async (e) => {
-                    e.preventDefault();
-                    const goal = document.getElementById('ai-platform-goal').value;
-                    const business = nameInput.value;
-                    const status = document.getElementById('ai-status-message');
-                    const out = document.getElementById('ai-generated-text');
-
-                    if(!goal) return;
-
-                    btn.disabled = true;
-                    btn.innerHTML = `<i class="fas fa-spin fa-circle-notch"></i>`;
-                    status.textContent = "Generiere...";
-
+            window.sharePage = async () => {
+                if (navigator.share) {
                     try {
-                         // Fallback simulation if no API key in GitHub version
-                         // In Canvas, use the provided API logic from previous turns
-                         // Here simplified for the "ready to deploy" file structure
-                         // Note: Real Gemini call requires backend or exposed key. 
-                         // For GitHub static pages, exposing key is risky. 
-                         // We will leave the structure but warn about keys.
-                         
-                         // SIMULATION for Demo purposes on GitHub Pages without backend
-                         await new Promise(r => setTimeout(r, 1500));
-                         out.value = `[KI-Demo]: Entdecke jetzt die neuen Angebote bei ${business}! 🌟 Perfekt für ${goal}. Link in Bio! 👇`;
-                         out.classList.remove('hidden');
-                         status.textContent = "Text generiert (Demo-Modus)";
+                        await navigator.share({
+                            title: document.title,
+                            url: window.location.href.split('?')[0] // Share clean URL without admin params
+                        });
+                    } catch (err) { console.log('Share canceled'); }
+                } else {
+                    alert('URL kopiert: ' + window.location.href.split('?')[0]);
+                }
+            };
 
-                    } catch(err) {
-                        status.textContent = "Fehler";
-                    } finally {
-                        btn.disabled = false;
-                        btn.textContent = "Text generieren";
-                    }
-                };
-            }
         }
-        
-        window.sharePage = async () => {
-            if (navigator.share) {
-                try {
-                    await navigator.share({
-                        title: document.title,
-                        url: window.location.href.split('?')[0] // Share clean URL without admin params
-                    });
-                } catch (err) { console.log('Share canceled'); }
-            } else {
-                alert('URL kopiert: ' + window.location.href.split('?')[0]);
-            }
-        };
 
         initApp();
     </script>
